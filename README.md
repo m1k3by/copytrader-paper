@@ -34,7 +34,8 @@ select cron.schedule('monitor-traders', '30 seconds', $$
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'secret_key')
-    )
+    ),
+    timeout_milliseconds := 25000 -- pg_net default is 5 s
   );
 $$);
 

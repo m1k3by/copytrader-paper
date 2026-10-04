@@ -75,16 +75,14 @@ export default {
     const { data: settings } = await db.from("settings").select().single().throwOnError();
     const { data: traders } = await db.from("traders").select().eq("enabled", true).throwOnError();
     const mids = await hyperliquid({ type: "allMids" });
-    const results = [];
-    // ponytail: sequential, one Hyperliquid call per trader; parallelise if the trader list gets long
-    for (const t of traders as Trader[]) {
-      try {
-        results.push(await syncTrader(db, t, settings, mids));
-      } catch (e) {
+    // Traders are independent; sequential took ~0.5 s each and hit pg_net's timeout at 10 traders.
+    // ponytail: all at once, batch if the list grows past Hyperliquid's rate limit (1200 weight/min per IP)
+    const results = await Promise.all((traders as Trader[]).map((t) =>
+      syncTrader(db, t, settings, mids).catch((e) => {
         console.error(t.name, e);
-        results.push({ trader: t.name, error: String(e) });
-      }
-    }
+        return { trader: t.name, error: String(e) };
+      })
+    ));
     return Response.json(results);
   }),
 };
