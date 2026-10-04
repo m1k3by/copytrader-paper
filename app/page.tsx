@@ -11,6 +11,7 @@ type Trade = {
   entry_price: number;
   exit_price: number | null;
   size_usd: number;
+  realized_pnl: number; // booked from partial closes while still open
   pnl: number | null;
   opened_at: string;
   closed_at: string | null;
@@ -24,7 +25,7 @@ const price = (n: number) => n.toLocaleString("en-US", { maximumSignificantDigit
 
 export default async function Home() {
   const db = connect();
-  const trades = "id, coin, side, entry_price, exit_price, size_usd, pnl, opened_at, closed_at, source_trades(traders(name))";
+  const trades = "id, coin, side, entry_price, exit_price, size_usd, realized_pnl, pnl, opened_at, closed_at, source_trades(traders(name))";
   const [settings, stats, open, closed, mids] = await Promise.all([
     db.from("settings").select().single().throwOnError(),
     db.from("trader_stats").select().order("enabled", { ascending: false }).order("realized_pnl", { ascending: false }).throwOnError(),
@@ -38,7 +39,7 @@ export default async function Home() {
   // Unrealized = what closing right now would book, incl. exit slippage and both fees.
   const live = openTrades.map((t) => {
     const mid = Number(mids[t.coin]);
-    const pnl = mid ? closePnl(t.side, t.size_usd, t.entry_price, fillPrice(mid, t.side, s.slippage_bps, false), s.fee_bps).pnl : 0;
+    const pnl = t.realized_pnl + (mid ? closePnl(t.side, t.size_usd, t.entry_price, fillPrice(mid, t.side, s.slippage_bps, false), s.fee_bps).pnl : 0);
     return { ...t, mid, pnl };
   });
   const realized = stats.data.reduce((sum, t) => sum + t.realized_pnl, 0);

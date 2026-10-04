@@ -1,11 +1,13 @@
-// Called by Supabase Cron every 30s. Mirrors each enabled trader's Hyperliquid positions as paper trades.
+// Called by Supabase Cron every 30s. Mirrors each enabled trader's positions as paper trades:
+// Hyperliquid wallets directly, Invo (paper) portfolios through Invo's unofficial app API.
 import { withSupabase, type SupabaseContext } from "@supabase/server";
-import { closePnl, diffPositions, fillPrice, type Position, type Side } from "./engine.ts";
+import { closePnl, diffPositions, fillPrice, resizeTrade, type Position, type Side } from "./engine.ts";
 
 type Db = SupabaseContext["supabaseAdmin"];
 type Settings = { position_size: number; fee_bps: number; slippage_bps: number };
-type Trader = { id: number; name: string; wallet_address: string; synced_at: string | null };
+type Trader = { id: number; name: string; platform: string; wallet_address: string; synced_at: string | null };
 type HlPosition = { coin: string; szi: string; entryPx: string; leverage?: { value: number } };
+type InvoPosition = { ticker: string; directionLong: boolean; entryPrice: number; entrySim: number; leverage: number };
 
 async function hyperliquid(body: object) {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
@@ -17,18 +19,67 @@ async function hyperliquid(body: object) {
   return res.json();
 }
 
-async function syncTrader(db: Db, t: Trader, s: Settings, mids: Record<string, string>) {
-  const state = await hyperliquid({ type: "clearinghouseState", user: t.wallet_address });
-  const current: Position[] = state.assetPositions.map(({ position: p }: { position: HlPosition }) => ({
+// Invo: headers as sent by app.invoapp.com (web app 0.0.85). Access tokens live ~10 min and are minted from
+// a long-lived refresh token (INVO_REFRESH_TOKEN secret, set by hand). Cached while the function instance is warm.
+const INVO = "https://api.invoapp.com";
+const INVO_HEADERS = { "x-app-version": "0.0.85", "x-platform": "web" };
+let invoToken: { value: string; expires: number } | null = null;
+let minting: Promise<{ value: string; expires: number }> | null = null;
+
+async function mintInvoToken() {
+  const refresh = Deno.env.get("INVO_REFRESH_TOKEN");
+  if (!refresh) throw new Error("INVO_REFRESH_TOKEN secret not set");
+  const res = await fetch(`${INVO}/v1_0/auth/refresh_token`, { headers: { Authorization: `Bearer ${refresh}`, ...INVO_HEADERS } });
+  if (!res.ok) throw new Error(`invo refresh ${res.status}: ${await res.text()}`);
+  const { accessToken } = await res.json();
+  const payload = JSON.parse(atob(accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+  return { value: accessToken as string, expires: Number(payload.expires) }; // NaN -> refreshed every run
+}
+
+async function invoAccessToken() {
+  if (invoToken && invoToken.expires - Date.now() / 1000 > 30) return invoToken.value;
+  // One refresh shared by all traders of a run; a failed one is forgotten so the next run retries.
+  minting ??= mintInvoToken().finally(() => { minting = null; });
+  invoToken = await minting;
+  return invoToken.value;
+}
+
+async function invoPositions(portfolioId: string): Promise<Position[]> {
+  const res = await fetch(`${INVO}/v1_0/investments/get_investments_sims`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await invoAccessToken()}`, "Content-Type": "application/json", ...INVO_HEADERS },
+    body: JSON.stringify({ portfolioId }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`invo ${res.status}: ${text}`);
+  const data = JSON.parse(text.trimStart().startsWith("{") ? text : atob(text)); // some Invo responses are base64 JSON
+  if (!data.success) throw new Error(`invo: ${text}`);
+  // entrySim = sim capital put into the position; assumed to grow on adds and shrink on partial closes.
+  return (data.investments as InvoPosition[]).map((i) => ({
+    coin: i.ticker,
+    side: i.directionLong ? "long" : "short",
+    entryPrice: i.entryPrice,
+    size: i.entrySim,
+    leverage: i.leverage,
+  }));
+}
+
+async function hyperliquidPositions(wallet: string): Promise<Position[]> {
+  const state = await hyperliquid({ type: "clearinghouseState", user: wallet });
+  return state.assetPositions.map(({ position: p }: { position: HlPosition }) => ({
     coin: p.coin,
     side: Number(p.szi) > 0 ? "long" : "short",
     entryPrice: Number(p.entryPx),
     size: Math.abs(Number(p.szi)),
     leverage: p.leverage?.value ?? null,
   }));
-  const { data: open } = await db.from("source_trades").select("id, coin, side")
+}
+
+async function syncTrader(db: Db, t: Trader, s: Settings, mids: Record<string, string>) {
+  const current = t.platform === "invo" ? await invoPositions(t.wallet_address) : await hyperliquidPositions(t.wallet_address);
+  const { data: open } = await db.from("source_trades").select("id, coin, side, size")
     .eq("trader_id", t.id).is("closed_at", null).throwOnError();
-  const { closed, opened } = diffPositions(current, open);
+  const { closed, opened, resized } = diffPositions(current, open);
   const now = new Date().toISOString();
   const skipped: string[] = [];
 
@@ -36,15 +87,33 @@ async function syncTrader(db: Db, t: Trader, s: Settings, mids: Record<string, s
     const mid = Number(mids[o.coin]);
     if (!mid) { skipped.push(o.coin); continue; } // no price: retry next run
     // Paper trade first: if the source update below fails, the next run retries it and finds no open paper trade.
-    const { data: pt } = await db.from("paper_trades").select("id, side, size_usd, entry_price")
+    const { data: pt } = await db.from("paper_trades").select("id, side, size_usd, entry_price, realized_pnl, fees")
       .eq("source_trade_id", o.id).eq("status", "open").maybeSingle().throwOnError();
     if (pt) {
       const exit = fillPrice(mid, pt.side as Side, s.slippage_bps, false);
-      const { pnl, fees } = closePnl(pt.side as Side, pt.size_usd, pt.entry_price, exit, s.fee_bps);
-      await db.from("paper_trades").update({ exit_price: exit, fees, pnl, status: "closed", closed_at: now })
+      const last = closePnl(pt.side as Side, pt.size_usd, pt.entry_price, exit, s.fee_bps);
+      await db.from("paper_trades")
+        .update({ exit_price: exit, fees: pt.fees + last.fees, pnl: pt.realized_pnl + last.pnl, status: "closed", closed_at: now })
         .eq("id", pt.id).eq("status", "open").throwOnError();
     }
     await db.from("source_trades").update({ exit_price: mid, closed_at: now }).eq("id", o.id).throwOnError();
+  }
+
+  for (const { source, position } of resized) {
+    const mid = Number(mids[source.coin]);
+    if (!mid) { skipped.push(source.coin); continue; }
+    // Source first: if the paper update below fails we miss one resize instead of applying it twice next run.
+    // ponytail: two overlapping runs could still both apply it; add a compare-and-set on size if that ever shows up.
+    await db.from("source_trades").update({ size: position.size, entry_price: position.entryPrice }).eq("id", source.id).throwOnError();
+    const { data: pt } = await db.from("paper_trades").select("id, side, size_usd, entry_price, realized_pnl, fees")
+      .eq("source_trade_id", source.id).eq("status", "open").maybeSingle().throwOnError();
+    if (!pt) continue; // position predates tracking, never copied
+    const ratio = position.size / source.size;
+    const fill = fillPrice(mid, pt.side as Side, s.slippage_bps, ratio > 1);
+    const r = resizeTrade(pt.side as Side, pt.size_usd, pt.entry_price, ratio, fill, s.fee_bps);
+    await db.from("paper_trades")
+      .update({ size_usd: r.sizeUsd, entry_price: r.entry, realized_pnl: pt.realized_pnl + r.realized, fees: pt.fees + r.fees })
+      .eq("id", pt.id).eq("status", "open").throwOnError();
   }
 
   for (const p of opened) {
@@ -66,7 +135,7 @@ async function syncTrader(db: Db, t: Trader, s: Settings, mids: Record<string, s
   }
 
   await db.from("traders").update({ synced_at: now }).eq("id", t.id).throwOnError();
-  return { trader: t.name, closed: closed.length, opened: opened.length, skipped };
+  return { trader: t.name, closed: closed.length, opened: opened.length, resized: resized.length, skipped };
 }
 
 export default {
