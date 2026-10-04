@@ -75,26 +75,26 @@ export default async function Home() {
         ))}
       </Table>
 
-      <Table title="Live Paper Trades" head={["Coin", "Trader", "Entry", "Current", "PnL"]}>
+      <Table title="Live Paper Trades" head={["Coin", "PnL", "Trader", "Entry", "Current"]}>
         {live.map((t) => (
           <tr key={t.id}>
             <td>{t.coin} {t.side.toUpperCase()}</td>
+            <td className={color(t.pnl)}>{signed(t.pnl)} ({((t.pnl / t.size_usd) * 100).toFixed(2)}%)</td>
             <td>{t.source_trades.traders.name}</td>
             <td>{price(t.entry_price)}</td>
             <td>{t.mid ? price(t.mid) : "–"}</td>
-            <td className={color(t.pnl)}>{signed(t.pnl)} ({((t.pnl / t.size_usd) * 100).toFixed(2)}%)</td>
           </tr>
         ))}
       </Table>
 
-      <Table title="Closed (last 50)" head={["Coin", "Trader", "Entry", "Exit", "PnL", "Closed"]}>
+      <Table title="Closed (last 50)" head={["Coin", "PnL", "Trader", "Entry", "Exit", "Closed"]}>
         {(closed.data as unknown as Trade[]).map((t) => (
           <tr key={t.id}>
             <td>{t.coin} {t.side.toUpperCase()}</td>
+            <td className={color(t.pnl!)}>{signed(t.pnl!)}</td>
             <td>{t.source_trades.traders.name}</td>
             <td>{price(t.entry_price)}</td>
             <td>{price(t.exit_price!)}</td>
-            <td className={color(t.pnl!)}>{signed(t.pnl!)}</td>
             <td className="text-zinc-500">{new Date(t.closed_at!).toLocaleString("de-DE")}</td>
           </tr>
         ))}
