@@ -9,7 +9,7 @@ const RESIZE_TOLERANCE = 0.01;
 
 // Tracked positions the trader closed or flipped, positions we don't track yet,
 // and tracked positions the trader added to or partially closed (same side, size changed).
-export function diffPositions(current: Position[], open: OpenSource[]) {
+export function diffPositions<S extends OpenSource>(current: Position[], open: S[]) {
   const now = new Map(current.map((p) => [p.coin, p]));
   const closed = open.filter((o) => now.get(o.coin)?.side !== o.side);
   const stillOpen = open.filter((o) => !closed.includes(o));
@@ -36,6 +36,23 @@ export function resizeTrade(side: Side, sizeUsd: number, entry: number, ratio: n
   }
   const part = closePnl(side, sizeUsd * (1 - ratio), entry, fill, feeBps);
   return { sizeUsd: sizeUsd * ratio, entry, realized: part.pnl, fees: part.fees };
+}
+
+// The trader's volume-weighted exit for a position of `side`, from their Hyperliquid fills on that coin.
+// Only the reducing part of a fill counts, so a flip contributes just the size that closed the old position.
+export type HlFill = { px: string; sz: string; side: "B" | "A"; startPosition: string };
+export function closingVwap(fills: HlFill[], side: Side): number | null {
+  let qty = 0;
+  let notional = 0;
+  for (const f of fills) {
+    const start = Number(f.startPosition);
+    const reduces = side === "long" ? f.side === "A" && start > 0 : f.side === "B" && start < 0;
+    if (!reduces) continue;
+    const closed = Math.min(Number(f.sz), Math.abs(start));
+    qty += closed;
+    notional += closed * Number(f.px);
+  }
+  return qty ? notional / qty : null;
 }
 
 // ponytail: funding payments are ignored, add them from userFunding if positions are held for days.

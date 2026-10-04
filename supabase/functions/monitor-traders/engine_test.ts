@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { closePnl, diffPositions, fillPrice, resizeTrade, type Position } from "./engine.ts";
+import { closePnl, closingVwap, diffPositions, fillPrice, resizeTrade, type HlFill, type Position } from "./engine.ts";
 
 const pos = (coin: string, side: "long" | "short", size = 1): Position => ({ coin, side, entryPrice: 1, size, leverage: null });
 
@@ -39,6 +39,16 @@ Deno.test("resizeTrade: add averages the entry, partial close books its share", 
   assert.equal(cut.entry, 100);
   assert.ok(Math.abs(cut.fees - (25 + 27.5) * 4.5e-4) < 1e-9);
   assert.ok(Math.abs(cut.realized - (2.5 - cut.fees)) < 1e-9);
+});
+
+Deno.test("closingVwap: only the closing part of fills, flips included, adds ignored", () => {
+  const f = (side: "A" | "B", start: number, sz: number, px: number): HlFill => ({ side, startPosition: String(start), sz: String(sz), px: String(px) });
+  // long 2: add 1 at 100 (ignored), sell 1 at 110, then flip by selling 4 at 120 (closes 2, opens short 2)
+  const long = [f("B", 1, 1, 100), f("A", 3, 1, 110), f("A", 2, 4, 120)];
+  assert.ok(Math.abs(closingVwap(long, "long")! - (110 + 2 * 120) / 3) < 1e-9);
+  // the short opened by the flip is closed by a buy at 115
+  assert.equal(closingVwap([f("A", 2, 4, 120), f("B", -2, 2, 115)], "short"), 115);
+  assert.equal(closingVwap([f("B", 0, 1, 100)], "long"), null);
 });
 
 Deno.test("fillPrice: slippage always works against us", () => {
