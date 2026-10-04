@@ -53,5 +53,5 @@ SUPABASE_SECRET_KEY=sb_secret_...
 
 ```bash
 npm run dev
-deno test supabase/functions/monitor-traders
+npm test
 ```

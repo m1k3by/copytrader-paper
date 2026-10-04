@@ -1,4 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
+import { hyperliquid } from "@/lib/hyperliquid";
+import { db as connect } from "@/lib/supabase";
 import { closePnl, fillPrice, type Side } from "@/supabase/functions/monitor-traders/engine";
 
 export const dynamic = "force-dynamic";
@@ -22,20 +23,14 @@ const color = (n: number) => (n >= 0 ? "text-emerald-400" : "text-red-400");
 const price = (n: number) => n.toLocaleString("en-US", { maximumSignificantDigits: 6 });
 
 export default async function Home() {
-  // Server only: the secret key never reaches the browser.
-  const db = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SECRET_KEY!, { auth: { persistSession: false } });
+  const db = connect();
   const trades = "id, coin, side, entry_price, exit_price, size_usd, pnl, opened_at, closed_at, source_trades(traders(name))";
   const [settings, stats, open, closed, mids] = await Promise.all([
     db.from("settings").select().single().throwOnError(),
     db.from("trader_stats").select().order("realized_pnl", { ascending: false }).throwOnError(),
     db.from("paper_trades").select(trades).eq("status", "open").order("opened_at", { ascending: false }).throwOnError(),
     db.from("paper_trades").select(trades).eq("status", "closed").order("closed_at", { ascending: false }).limit(50).throwOnError(),
-    fetch("https://api.hyperliquid.xyz/info", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "allMids" }),
-      cache: "no-store",
-    }).then((r) => r.json() as Promise<Record<string, string>>),
+    hyperliquid<Record<string, string>>({ type: "allMids" }),
   ]);
   const s = settings.data;
   const openTrades = open.data as unknown as Trade[];
