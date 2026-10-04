@@ -27,7 +27,7 @@ export default async function Home() {
   const trades = "id, coin, side, entry_price, exit_price, size_usd, pnl, opened_at, closed_at, source_trades(traders(name))";
   const [settings, stats, open, closed, mids] = await Promise.all([
     db.from("settings").select().single().throwOnError(),
-    db.from("trader_stats").select().order("realized_pnl", { ascending: false }).throwOnError(),
+    db.from("trader_stats").select().order("enabled", { ascending: false }).order("realized_pnl", { ascending: false }).throwOnError(),
     db.from("paper_trades").select(trades).eq("status", "open").order("opened_at", { ascending: false }).throwOnError(),
     db.from("paper_trades").select(trades).eq("status", "closed").order("closed_at", { ascending: false }).limit(50).throwOnError(),
     hyperliquid<Record<string, string>>({ type: "allMids" }),

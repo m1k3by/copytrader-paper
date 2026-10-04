@@ -41,9 +41,39 @@ export function rankCandidates(rows: LeaderboardRow[], limit: number): Candidate
     .slice(0, limit);
 }
 
-// Share of fills on the main perp dex. The worker only reads that dex, so trades on builder dexes ("xyz:INTC")
-// or spot ("@107") would never be copied. null = no fills to judge by.
+// The worker only reads the main perp dex; trades on builder dexes ("xyz:INTC") or spot ("@107") are never copied.
+const isMainDex = (coin: string) => !coin.includes(":") && !coin.startsWith("@");
+
+// Share of fills on the main perp dex. null = no fills to judge by.
 export function mainDexShare(fills: { coin: string }[]): number | null {
   if (!fills.length) return null;
-  return fills.filter((f) => !f.coin.includes(":") && !f.coin.startsWith("@")).length / fills.length;
+  return fills.filter((f) => isMainDex(f.coin)).length / fills.length;
+}
+
+const DAY = 864e5;
+export const RULES = { minMainShare: 0.8, maxHoursSinceOpen: 48, minActiveDays: 4 };
+export type Fill = { coin: string; dir: string; time: number };
+export type Activity = { mainShare: number | null; lastTrade: number | null; lastOpen: number | null; activeDays: number };
+
+// From userFills, i.e. the most recent fills (at most 2000).
+export function activity(fills: Fill[], now: number): Activity {
+  const week = fills.filter((f) => now - f.time < 7 * DAY);
+  const opens = week.filter((f) => isMainDex(f.coin) && f.dir.startsWith("Open")).map((f) => f.time);
+  // 2000 fills all inside the week: older days are cut off, so a trader that busy counts as active every day.
+  const truncated = fills.length >= 2000 && week.length === fills.length;
+  return {
+    mainShare: mainDexShare(week),
+    lastTrade: fills.length ? Math.max(...fills.map((f) => f.time)) : null,
+    lastOpen: opens.length ? Math.max(...opens) : null,
+    activeDays: truncated ? 7 : new Set(week.map((f) => Math.floor((now - f.time) / DAY))).size,
+  };
+}
+
+// Why a trader can't be copied right now, or null if they can.
+export function blocker(a: Activity, now: number): string | null {
+  if (a.mainShare === null) return "keine Trades (7 T.)";
+  if (a.mainShare < RULES.minMainShare) return "Nebenbörse/Spot";
+  if (a.lastOpen === null || now - a.lastOpen > RULES.maxHoursSinceOpen * 36e5) return `keine neue Position (${RULES.maxHoursSinceOpen} h)`;
+  if (a.activeDays < RULES.minActiveDays) return "selten aktiv";
+  return null;
 }
