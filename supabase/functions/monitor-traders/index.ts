@@ -12,6 +12,9 @@ type InvoClosed = { ticker: string; directionLong: boolean; isOpen: boolean; clo
 type OpenRow = { id: number; coin: string; side: Side; size: number; opened_at: string; resizes: number };
 type PaperRow = { id: number; side: Side; size_usd: number; entry_price: number; realized_pnl: number; fees: number };
 
+// Adds grow a copy to at most this multiple of position_size ($300 at $100).
+const MAX_SIZE_FACTOR = 3;
+
 async function hyperliquid(body: object) {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST",
@@ -137,7 +140,7 @@ async function syncTrader(db: Db, t: Trader, s: Settings, mids: Record<string, s
     const ratio = position.size / source.size;
     for (const pt of await openCopies(source.id)) {
       const fill = fillPrice(mid, pt.side, s.slippage_bps, ratio > 1);
-      const r = resizeTrade(pt.side, pt.size_usd, pt.entry_price, ratio, fill, s.fee_bps);
+      const r = resizeTrade(pt.side, pt.size_usd, pt.entry_price, ratio, fill, s.fee_bps, s.position_size * MAX_SIZE_FACTOR);
       await db.from("paper_trades")
         .update({ size_usd: r.sizeUsd, entry_price: r.entry, realized_pnl: pt.realized_pnl + r.realized, fees: pt.fees + r.fees })
         .eq("id", pt.id).eq("status", "open").throwOnError();

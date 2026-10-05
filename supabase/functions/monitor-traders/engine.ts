@@ -27,10 +27,12 @@ export function fillPrice(mid: number, side: Side, slippageBps: number, entering
 }
 
 // Scale our copy by the trader's size ratio (new / old size). size_usd is the total entry notional.
-// Adding buys at `fill` and averages the entry; reducing books the closed part, fees of both its legs included.
-export function resizeTrade(side: Side, sizeUsd: number, entry: number, ratio: number, fill: number, feeBps: number) {
+// Adding buys at `fill` and averages the entry, but never past `maxUsd`: a trader building a position in many
+// small fills would otherwise grow our copy by the whole build-up (seen: 60x on ZRO).
+// Reducing books the closed part, fees of both its legs included.
+export function resizeTrade(side: Side, sizeUsd: number, entry: number, ratio: number, fill: number, feeBps: number, maxUsd: number) {
   if (ratio >= 1) {
-    const added = sizeUsd * (ratio - 1);
+    const added = Math.min(sizeUsd * (ratio - 1), Math.max(0, maxUsd - sizeUsd));
     const qty = sizeUsd / entry + added / fill;
     return { sizeUsd: sizeUsd + added, entry: (sizeUsd + added) / qty, realized: 0, fees: 0 };
   }

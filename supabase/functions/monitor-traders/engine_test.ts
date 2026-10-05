@@ -29,16 +29,26 @@ Deno.test("diffPositions: adds and partial closes beyond 1% are resizes, noise i
 
 Deno.test("resizeTrade: add averages the entry, partial close books its share", () => {
   // $100 long at 100, trader doubles at 120: +$100 at 120 -> qty 1 + 0.8333, avg entry 200 / 1.8333 = 109.09
-  const add = resizeTrade("long", 100, 100, 2, 120, 4.5);
+  const add = resizeTrade("long", 100, 100, 2, 120, 4.5, 300);
   assert.equal(add.sizeUsd, 200);
   assert.ok(Math.abs(add.entry - 200 / (1 + 100 / 120)) < 1e-9);
   assert.equal(add.realized, 0);
   // $100 long at 100, trader closes 25% at 110: books $25 of it -> +$2.50 gross minus fees on $25 + $27.50
-  const cut = resizeTrade("long", 100, 100, 0.75, 110, 4.5);
+  const cut = resizeTrade("long", 100, 100, 0.75, 110, 4.5, 300);
   assert.equal(cut.sizeUsd, 75);
   assert.equal(cut.entry, 100);
   assert.ok(Math.abs(cut.fees - (25 + 27.5) * 4.5e-4) < 1e-9);
   assert.ok(Math.abs(cut.realized - (2.5 - cut.fees)) < 1e-9);
+});
+
+Deno.test("resizeTrade: adds stop at maxUsd, a copy already above it does not grow", () => {
+  // trader builds 60x in small fills (ZRO): $100 -> $300, not $6,000; entry averages over the $200 actually added
+  const add = resizeTrade("long", 100, 100, 60, 120, 4.5, 300);
+  assert.equal(add.sizeUsd, 300);
+  assert.ok(Math.abs(add.entry - 300 / (1 + 200 / 120)) < 1e-9);
+  const over = resizeTrade("long", 416, 100, 2, 120, 4.5, 300);
+  assert.equal(over.sizeUsd, 416);
+  assert.equal(over.entry, 100);
 });
 
 Deno.test("closingVwap: only the closing part of fills, flips included, adds ignored", () => {
